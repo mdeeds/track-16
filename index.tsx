@@ -1,0 +1,1 @@
+// This file is no longer used. The entry point is index.js imported by index.html.

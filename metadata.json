@@ -1,0 +1,7 @@
+{
+  "name": "Gemini 16-Track Studio",
+  "description": "A 16-track audio recorder with an AI assistant powered by Gemini Nano.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
