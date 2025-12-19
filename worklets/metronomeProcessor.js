@@ -1,73 +1,109 @@
+/**
+ * An AudioWorkletProcessor that generates metronome clicks.
+ * It produces a sine wave beep for each beat, with a higher frequency for the downbeat.
+ * The timing and rhythm can be controlled via messages from the main thread.
+ *
+ * @class MetronomeProcessor
+ * @extends AudioWorkletProcessor
+ */
 class MetronomeProcessor extends AudioWorkletProcessor {
+  #bpm = 120;
+  #beatsPerMeasure = 4;
+  #startFrame = 0;
+  #nextBeatFrame = 0;
+  #beatCount = 0;
+  #beepDurationFrames = 0;
+
   constructor() {
     super();
-    this.bpm = 120;
-    this.beatsPerBar = 4;
-    this.currentSample = 0;
-    this.isPlaying = false;
-    this.volume = 0.5;
-
-    this.port.onmessage = (e) => {
-      if (e.data.type === 'update') {
-        if (e.data.bpm) this.bpm = e.data.bpm;
-        if (e.data.beatsPerBar) this.beatsPerBar = e.data.beatsPerBar;
-        if (e.data.volume !== undefined) this.volume = e.data.volume;
-      } else if (e.data.type === 'play') {
-        this.isPlaying = true;
-        this.currentSample = e.data.startSample || 0;
-      } else if (e.data.type === 'stop') {
-        this.isPlaying = false;
-        this.currentSample = 0;
-      }
-    };
+    this.port.onmessage = this.#handleMessage.bind(this);
+    this.#recalculateBeepDuration();
   }
 
-  process(inputs, outputs, parameters) {
-    const output = outputs[0];
-    const channel = output[0];
-    
-    if (!this.isPlaying || !channel) return true;
+  /**
+   * Recalculates the duration of the beep in frames.
+   * This is called on initialization.
+   */
+  #recalculateBeepDuration() {
+    const beepDurationSeconds = 0.02;
+    // sampleRate is available in AudioWorkletGlobalScope
+    this.#beepDurationFrames = beepDurationSeconds * sampleRate;
+  }
 
-    // sampleRate is a global in AudioWorkletGlobalScope
-    const samplesPerBeat = (60 / this.bpm) * sampleRate;
-    const samplesPerBar = samplesPerBeat * this.beatsPerBar;
+  /**
+   * Handles messages from the main thread to update metronome settings.
+   * @param {MessageEvent} event
+   */
+  #handleMessage(event) {
+    const { type, value } = event.data;
+    if (type === 'update') {
+      const { bpm, beatsPerMeasure, startFrame } = value;
 
-    for (let i = 0; i < channel.length; i++) {
-      const beatPosition = this.currentSample % samplesPerBeat;
-      const barPosition = this.currentSample % samplesPerBar;
-      
-      // Simple click synthesis
-      let sample = 0;
-      
-      // Accent on the one
-      if (barPosition < 200) {
-        sample = 0.8 * this.volume; 
-      } else if (beatPosition < 200) {
-         sample = 0.4 * this.volume;
-      }
-      
-      // Decay
-      if (barPosition < 2000 && barPosition >= 200) {
-         sample = (0.8 - ((barPosition - 200) / 1800) * 0.8) * this.volume;
-      } else if (beatPosition < 2000 && beatPosition >= 200) {
-         sample = (0.4 - ((beatPosition - 200) / 1800) * 0.4) * this.volume;
+      if (beatsPerMeasure !== undefined) {
+        this.#beatsPerMeasure = beatsPerMeasure;
       }
 
-      channel[i] = sample;
-      // Copy to other channels if stereo
-      for (let c = 1; c < output.length; c++) {
-        output[c][i] = sample;
+      if (bpm !== undefined) {
+        this.#bpm = bpm;
       }
 
-      this.currentSample++;
+      // If a new startFrame is provided, reset the metronome's timing sequence.
+      if (startFrame !== undefined) {
+        this.#startFrame = startFrame;
+        this.#nextBeatFrame = startFrame;
+        this.#beatCount = 0;
+
+        console.log(`Current frame: ${currentFrame}, start frame: ${startFrame}`);
+      }
     }
-    
-    // Post current time back to main thread occasionally for UI updates
-    if (this.currentSample % 5000 === 0) {
-      this.port.postMessage({ type: 'time', sample: this.currentSample });
+  }
+
+  /**
+   * Called by the browser's audio engine to generate audio data.
+   * @param {Float32Array[][]} inputs - An array of inputs (not used).
+   * @param {Float32Array[][]} outputs - An array of outputs to fill with audio data.
+   * @returns {boolean} - Must return true to keep the processor alive.
+   */
+  process(inputs, outputs) {
+    const output = outputs[0];
+    const leftChannel = output[0];
+    let rightChannel = null;
+    if (output.length > 1) rightChannel = output[1];
+
+    const framesPerBeat = (60 / this.#bpm) * sampleRate;
+
+    for (let i = 0; i < leftChannel.length; i++) {
+      const frame = currentFrame + i;
+
+      // Check if it's time for the next beat.
+      if (frame >= this.#nextBeatFrame) {
+        // Schedule the next beat.
+        this.#nextBeatFrame += framesPerBeat;
+        // Increment beat count, wrapping around the measure.
+        this.#beatCount = (this.#beatCount + 1) % this.#beatsPerMeasure;
+      }
+      // The beat count is always incremented one past where the beat is.
+      const isDownbeat = (this.#beatCount === 1 && this.#beatsPerMeasure > 0);
+
+      // The frame number of the beat that just happened or is about to happen.
+      const lastBeatFrame = this.#nextBeatFrame - framesPerBeat;
+      const framesSinceLastBeat = frame - lastBeatFrame;
+
+      let sample = 0;
+      // Generate audio only if we are within the beep's duration.
+      if (framesSinceLastBeat >= 0 && framesSinceLastBeat < this.#beepDurationFrames) {
+        // Use a higher frequency for the downbeat (beat 0).
+        const frequency = isDownbeat ? 800 : 400;
+        const phase = (framesSinceLastBeat / sampleRate) * frequency * 2 * Math.PI;
+        sample = Math.sin(phase);
+      }
+
+      leftChannel[i] = sample;
+      if (rightChannel) { rightChannel[i] = sample; }
     }
 
     return true;
   }
 }
+
 registerProcessor('metronome-processor', MetronomeProcessor);

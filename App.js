@@ -1,3 +1,4 @@
+
 import { AppTab } from './types.js';
 import { BaseComponent } from './components/BaseComponent.js';
 import { audioEngine } from './services/audioEngine.js';
@@ -221,6 +222,7 @@ export class AppRoot extends BaseComponent {
           <div class="flex items-center gap-3">
               <h1 class="text-xl font-bold app-title">Gemini 16-Track</h1>
               <button id="btn-new-tab" class="new-tab-btn text-xs" title="Open in new tab">↗ New Tab</button>
+              <button id="btn-audio-init" class="new-tab-btn text-xs" title="Initialize Microphone">🎤 Connect Audio</button>
           </div>
           
           <div class="flex gap-4">
@@ -254,6 +256,21 @@ export class AppRoot extends BaseComponent {
 
     // Events
     this.bind('#btn-new-tab', 'click', () => window.open(window.location.href, '_blank'));
+    this.bind('#btn-audio-init', 'click', async () => {
+        try {
+            await audioEngine.initInput();
+            const info = audioEngine.inputDeviceInfo;
+            this.addLog('system', `Audio connected: ${info.label} (${info.sampleRate}Hz)`);
+            // Refresh Metronome if active to show new info
+            if (activeTab === AppTab.Metronome) {
+                const el = this.querySelector('metronome-tool');
+                if (el && typeof el.render === 'function') el.render();
+            }
+        } catch(e) {
+            this.addLog('system', `Connection failed: ${e.message}`);
+        }
+    });
+
     this.bind('#btn-play', 'click', () => { audioEngine.init(); audioEngine.play(null, null, []); });
     this.bind('#btn-stop', 'click', () => audioEngine.stop());
     this.bind('#btn-rec', 'click', () => {

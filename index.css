@@ -1,3 +1,4 @@
+
 :root {
   --bg-dark: #0d1117;
   --bg-panel: #111827;
@@ -46,20 +47,34 @@ body {
 .gap-2 { gap: 0.5rem; }
 .gap-3 { gap: 0.75rem; }
 .gap-4 { gap: 1rem; }
+.gap-8 { gap: 2rem; }
+.space-y-4 > * + * { margin-top: 1rem; }
 .p-2 { padding: 0.5rem; }
 .p-4 { padding: 1rem; }
+.mb-1 { margin-bottom: 0.25rem; }
+.mb-2 { margin-bottom: 0.5rem; }
+.mb-4 { margin-bottom: 1rem; }
+.mb-6 { margin-bottom: 1.5rem; }
+.mt-2 { margin-top: 0.5rem; }
 .overflow-hidden { overflow: hidden; }
 .overflow-y-auto { overflow-y: auto; }
 .overflow-x-auto { overflow-x: auto; }
 .relative { position: relative; }
 .shrink-0 { flex-shrink: 0; }
 .min-w-0 { min-width: 0; }
+.block { display: block; }
 .font-bold { font-weight: bold; }
 .font-mono { font-family: monospace; }
 .text-xs { font-size: 0.75rem; }
 .text-sm { font-size: 0.875rem; }
 .text-lg { font-size: 1.125rem; }
 .text-xl { font-size: 1.25rem; }
+.text-center { text-align: center; }
+.uppercase { text-transform: uppercase; }
+
+/* Grid */
+.grid { display: grid; }
+.grid-cols-2 { grid-template-columns: repeat(2, 1fr); }
 
 /* App Header */
 .app-header {
@@ -269,6 +284,25 @@ body {
   background-color: var(--bg-surface);
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
+.device-select {
+  width: 100%;
+  background-color: var(--bg-surface);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  padding: 0.25rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.device-select:focus {
+  outline: none;
+  border-color: var(--primary-blue);
+}
+.device-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .bpm-display {
   position: absolute;
   inset: 0;
@@ -294,6 +328,19 @@ body {
   appearance: none;
   cursor: pointer;
 }
+
+/* VU Meter */
+.vu-meter-bg {
+  background-color: var(--bg-surface);
+  border-radius: 0.25rem;
+  overflow: hidden;
+}
+.max-w-md { max-width: 28rem; }
+.bg-gray-800 { background-color: var(--bg-surface-hover); }
+.bg-green-500 { background-color: var(--accent-green); }
+.rounded { border-radius: 0.25rem; }
+.h-4 { height: 1rem; }
+.transition-all { transition: all 0.075s; }
 
 /* Chat Interface */
 .chat-sidebar {
