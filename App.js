@@ -40,14 +40,8 @@ export class AppRoot extends BaseComponent {
 
   connectedCallback() {
     this.parseSongText(INITIAL_SONG_TEXT);
-    
-    // Init Gemini
-    geminiService.isAvailable().then(avail => {
-        if (!avail) this.addLog('system', "Gemini Nano is not detected. Use Chrome Canary.");
-        else this.addLog('system', "Gemini Nano ready. Try 'Arm track 1'.");
-    });
+    this.addLog('system', "Studio initialized. Gemini Nano (Local) ready to assist.");
 
-    // Audio Callbacks
     audioEngine.onTimeUpdate = (time) => {
         this.state.currentTime = time;
         const display = this.querySelector('#time-display');
@@ -58,7 +52,7 @@ export class AppRoot extends BaseComponent {
         const newTracks = [...this.state.tracks];
         newTracks[idx] = { ...newTracks[idx], hasAudio: true, armed: false };
         this.state.tracks = newTracks;
-        this.addLog('system', `Recording finished on Track ${idx + 1}.`);
+        this.addLog('system', `Recording finalized on Track ${idx + 1}.`);
         this.render();
     };
     
@@ -68,8 +62,11 @@ export class AppRoot extends BaseComponent {
   addLog(sender, text) {
     this.state.logs = [...this.state.logs, { id: Date.now(), sender, text }];
     const chat = this.querySelector('chat-interface');
-    if (chat) chat.props = { logs: this.state.logs, isLoading: this.state.isAiLoading, onSendMessage: this.handleAiMessage.bind(this) };
-    else this.render();
+    if (chat) {
+        chat.props = { logs: this.state.logs, isLoading: this.state.isAiLoading, onSendMessage: this.handleAiMessage.bind(this) };
+    } else {
+        this.render();
+    }
   }
 
   parseSongText(text) {
@@ -90,76 +87,54 @@ export class AppRoot extends BaseComponent {
     this.state.songState = { ...this.state.songState, text, sections };
   }
 
-  async executeTool(toolObj) {
-    const entries = Object.entries(toolObj);
-    if (entries.length === 0) return;
-    const [command, args] = entries[0];
+  async executeCommand(item) {
+    const { command, args, message } = item;
+    if (message) this.addLog('ai', message);
 
-    console.log("Executing:", command, args);
+    console.log("Studio Action:", command, args);
 
     switch (command) {
-        case 'message':
-            this.addLog('ai', args.text);
-            break;
         case 'play':
             await audioEngine.init();
-            audioEngine.play(args.start_section, args.last_section, this.state.songState.sections);
-            this.addLog('system', `Playing...`);
+            audioEngine.play(args.start_section, null, this.state.songState.sections);
             break;
         case 'stop':
             audioEngine.stop();
-            this.addLog('system', "Stopped.");
             break;
         case 'arm':
             this.handleArmTrack(args.track_number);
             this.state.activeTab = AppTab.TapeDeck;
-            this.addLog('system', `Track ${args.track_number} armed.`);
             this.render();
             break;
         case 'record':
             const armedTrack = this.state.tracks.find(t => t.armed);
             if (!armedTrack) {
-                this.addLog('ai', "Please arm a track first.");
+                this.addLog('system', "Error: No tracks armed for recording.");
                 return;
             }
             await audioEngine.init();
             audioEngine.record(armedTrack.id - 1);
-            this.addLog('system', `Recording Track ${armedTrack.id}...`);
             break;
-        case 'set_metronome_properties':
-            if (args.volumeDB !== undefined) {
-                audioEngine.updateMetronome(args.volumeDB);
-                this.addLog('system', `Metronome volume ${args.volumeDB}dB.`);
-            }
-            break;
-        case 'update_song_attributes':
+        case 'set_bpm':
             if (args.bpm) {
                 this.state.songState.bpm = args.bpm;
                 audioEngine.setBpm(args.bpm);
-                this.addLog('system', `BPM set to ${args.bpm}.`);
                 this.render();
             }
             break;
-        case 'create_section':
-            const newSect = `\n[${args.name}: ${args.bar_count}]\n${args.body || ''}\n`;
-            this.parseSongText(this.state.songState.text + newSect);
-            this.addLog('system', `Created section ${args.name}.`);
+        case 'add_section':
+            const newSect = `\n[${args.name}: ${args.bars}]\n`;
+            const updatedText = this.state.songState.text + newSect;
+            this.parseSongText(updatedText);
             this.state.activeTab = AppTab.SongSheet;
             this.render();
             break;
-        case 'update_mixer_channel':
+        case 'update_mixer':
             this.handleUpdateTrack(args.channel, {
                 gainDB: args.gainDB,
                 muted: args.mute,
                 soloed: args.solo
             });
-            // Don't auto-switch tab for mixer updates to avoid jumpiness, 
-            // unless explicitly asked? Prompt implied just doing it.
-            // But if we are already on mixer, we don't want to re-render.
-            if (this.state.activeTab !== AppTab.Mixer) {
-                 this.state.activeTab = AppTab.Mixer;
-                 this.render();
-            }
             break;
     }
   }
@@ -167,21 +142,20 @@ export class AppRoot extends BaseComponent {
   async handleAiMessage(text) {
     this.addLog('user', text);
     this.state.isAiLoading = true;
-    const chat = this.querySelector('chat-interface');
-    if (chat) chat.props = { ...chat.props, isLoading: true };
+    this.render(); // Ensure loading state shows
 
     try {
-        if (!geminiService.session) {
-            await geminiService.createSession(this.state.songState);
+        const results = await geminiService.prompt(text, this.state.songState);
+        if (Array.isArray(results)) {
+            for (const item of results) {
+                await this.executeCommand(item);
+            }
         }
-        const tools = await geminiService.prompt(text);
-        for (const tool of tools) await this.executeTool(tool);
     } catch (e) {
-        this.addLog('system', `Error: ${e.message}`);
+        this.addLog('system', `Studio Error: ${e.message}`);
     } finally {
         this.state.isAiLoading = false;
-        const chatEl = this.querySelector('chat-interface');
-        if(chatEl) chatEl.props = { logs: this.state.logs, isLoading: false, onSendMessage: this.handleAiMessage.bind(this) };
+        this.render();
     }
   }
 
@@ -194,7 +168,6 @@ export class AppRoot extends BaseComponent {
   }
 
   handleUpdateTrack(id, updates) {
-      // Update State
       this.state.tracks = this.state.tracks.map(t => {
           if (t.id === id) {
               if (updates.gainDB !== undefined) audioEngine.setTrackVolume(id - 1, updates.gainDB);
@@ -203,10 +176,9 @@ export class AppRoot extends BaseComponent {
           return t;
       });
 
-      // Update UI intelligently (avoid re-rendering Mixer if active to preserve slider focus)
       const mixer = this.querySelector('audio-mixer');
       if (mixer) {
-          mixer._props.tracks = this.state.tracks; // Keep props in sync
+          mixer._props.tracks = this.state.tracks;
           mixer.updateTrackUI(id, updates);
       } else {
           this.render();
@@ -217,12 +189,12 @@ export class AppRoot extends BaseComponent {
     const { activeTab, currentTime, logs, isAiLoading, songState, tracks } = this.state;
 
     this.innerHTML = `
-      <div class="flex flex-col h-screen w-full">
+      <div class="flex flex-col h-screen w-full bg-black">
         <div class="app-header flex items-center justify-between shrink-0">
           <div class="flex items-center gap-3">
-              <h1 class="text-xl font-bold app-title">Gemini 16-Track</h1>
-              <button id="btn-new-tab" class="new-tab-btn text-xs" title="Open in new tab">↗ New Tab</button>
-              <button id="btn-audio-init" class="new-tab-btn text-xs" title="Initialize Microphone">🎤 Connect Audio</button>
+              <h1 class="text-xl font-bold app-title">GEMINI STUDIO 16</h1>
+              <div class="h-4 w-px bg-gray-700 mx-2"></div>
+              <button id="btn-audio-init" class="new-tab-btn text-xs">🎤 CONNECT MIC</button>
           </div>
           
           <div class="flex gap-4">
@@ -231,22 +203,22 @@ export class AppRoot extends BaseComponent {
                <button id="btn-rec" class="transport-btn btn-rec">REC</button>
           </div>
 
-          <div id="time-display" class="font-mono text-xl time-display">
+          <div id="time-display" class="font-mono text-2xl time-display tabular-nums">
               ${currentTime.toFixed(2)}s
           </div>
         </div>
 
         <div class="flex flex-1 overflow-hidden">
-          <div class="flex-1 flex flex-col min-w-0">
+          <div class="flex-1 flex flex-col min-w-0 bg-[#080808]">
              <div class="tab-bar flex">
                 ${Object.values(AppTab).map(tab => `
                     <button class="tab-btn ${activeTab === tab ? 'active' : ''}" data-tab="${tab}">
-                      ${tab.replace(/([A-Z])/g, ' $1').trim()}
+                      ${tab.replace(/([A-Z])/g, ' $1').trim().toUpperCase()}
                     </button>
                 `).join('')}
              </div>
 
-             <div id="main-content" class="flex-1 p-4 bg-gray-950 overflow-hidden relative"></div>
+             <div id="main-content" class="flex-1 p-6 overflow-hidden relative"></div>
           </div>
 
           <chat-interface></chat-interface>
@@ -254,18 +226,10 @@ export class AppRoot extends BaseComponent {
       </div>
     `;
 
-    // Events
-    this.bind('#btn-new-tab', 'click', () => window.open(window.location.href, '_blank'));
     this.bind('#btn-audio-init', 'click', async () => {
         try {
             await audioEngine.initInput();
-            const info = audioEngine.inputDeviceInfo;
-            this.addLog('system', `Audio connected: ${info.label} (${info.sampleRate}Hz)`);
-            // Refresh Metronome if active to show new info
-            if (activeTab === AppTab.Metronome) {
-                const el = this.querySelector('metronome-tool');
-                if (el && typeof el.render === 'function') el.render();
-            }
+            this.addLog('system', `Input connected: ${audioEngine.inputDeviceInfo.label}`);
         } catch(e) {
             this.addLog('system', `Connection failed: ${e.message}`);
         }
@@ -279,7 +243,7 @@ export class AppRoot extends BaseComponent {
     this.bind('#btn-rec', 'click', () => {
          const armed = tracks.find(t => t.armed);
          if (armed) audioEngine.record(armed.id - 1);
-         else alert("Arm a track first");
+         else this.addLog('system', "Error: Arm a track first.");
     });
 
     this.bindAll('.tab-btn', 'click', (e, el) => {
@@ -287,7 +251,6 @@ export class AppRoot extends BaseComponent {
         this.render();
     });
 
-    // Mount Sub-components
     const content = this.querySelector('#main-content');
     if (activeTab === AppTab.SongSheet) {
         const el = document.createElement('song-sheet');
