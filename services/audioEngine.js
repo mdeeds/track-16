@@ -8,11 +8,13 @@ class AudioEngine {
     this.recorderNodes = Array(16).fill(null);
     this.gainNodes = Array(16).fill(null);
     
-    // Storage for raw audio data (Float32Arrays)
+    // Storage for raw audio data.
+    // Each track stores an object { left: Float32Array, right: Float32Array }
     this.trackBuffers = Array(16).fill(null);
 
     this.isPlaying = false;
     this.isRecording = false;
+    this.recordingTracks = new Set(); // Track indices currently recording
     this.currentSample = 0;
     this.startTime = 0;
     this.animationFrameId = null;
@@ -20,7 +22,7 @@ class AudioEngine {
     // State
     this.bpm = 120;
     this.beatsPerBar = 4;
-    this.metronomeVolume = 0.5; // Default linear volume
+    this.metronomeVolume = 0.5; 
     
     // Input Monitoring
     this.inputStream = null;
@@ -41,6 +43,16 @@ class AudioEngine {
 
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     
+    // Initialize Buffers after we know sample rate
+    // 5 minutes buffer
+    const bufferSize = this.ctx.sampleRate * 60 * 5; 
+    for(let i=0; i<16; i++) {
+        this.trackBuffers[i] = {
+            left: new Float32Array(bufferSize),
+            right: new Float32Array(bufferSize)
+        };
+    }
+
     // Load Worklets
     try {
         await this.ctx.audioWorklet.addModule('./worklets/metronomeProcessor.js');
@@ -52,8 +64,6 @@ class AudioEngine {
     }
 
     // Setup Metronome
-    // The processor handles timing, but not volume or stopping (it runs on global frame).
-    // We use a GainNode to control volume and start/stop (mute).
     this.metronomeNode = new AudioWorkletNode(this.ctx, 'metronome-processor');
     this.metronomeGain = this.ctx.createGain();
     this.metronomeGain.gain.value = 0; // Start muted
@@ -82,9 +92,6 @@ class AudioEngine {
     if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
         return { inputs: [], outputs: [] };
     }
-    // Ensure we have permission to see labels if possible by checking if stream exists
-    // If stream exists, we have permission.
-    
     const devices = await navigator.mediaDevices.enumerateDevices();
     return {
         inputs: devices.filter(d => d.kind === 'audioinput'),
@@ -113,13 +120,11 @@ class AudioEngine {
           this.currentInputDeviceId = deviceId;
       }
 
-      // Stop existing stream to release device or apply new constraints
       if (this.inputStream) {
           this.inputStream.getTracks().forEach(t => t.stop());
       }
 
       try {
-          // Use exact deviceId if provided and not default, otherwise let browser choose default
           const constraintAudio = {
               echoCancellation: false,
               noiseSuppression: false,
@@ -141,21 +146,18 @@ class AudioEngine {
               deviceId: settings.deviceId
           };
           
-          // Update current ID to matches what we actually got
           this.currentInputDeviceId = settings.deviceId;
           
-          // Reconnect Source
           if (this.inputSource) this.inputSource.disconnect();
           this.inputSource = this.ctx.createMediaStreamSource(this.inputStream);
           
-          // Reconnect Analyser
           if (!this.analyser) {
               this.analyser = this.ctx.createAnalyser();
               this.analyser.fftSize = 256; 
           }
           this.inputSource.connect(this.analyser);
 
-          // Reconnect any active recorders (if we swap inputs while armed/recording)
+          // Reconnect recorders if active
           this.recorderNodes.forEach(node => {
               if (node) this.inputSource.connect(node);
           });
@@ -170,41 +172,54 @@ class AudioEngine {
     this.startAudioContext();
     if (this.isPlaying) return;
 
-    // Determine start sample (simplified: always 0 for now unless specific logic added)
-    let startSample = 0; 
+    // Schedule start slightly in the future for synchronization
+    const now = this.ctx.currentTime;
+    const playStartTime = now + 0.05; // 50ms scheduling delay
+    const startFrame = Math.round(playStartTime * this.ctx.sampleRate);
     
-    // Sync Metronome
-    // We align the metronome beat to the current time by sending a 'update' message with startFrame.
-    const currentFrame = Math.round(this.ctx.currentTime * this.ctx.sampleRate);
+    // Metronome Sync
     if (this.metronomeNode) {
         this.metronomeNode.port.postMessage({ 
             type: 'update', 
             value: { 
                 bpm: this.bpm,
-                startFrame: currentFrame
+                startFrame: startFrame
             } 
         });
     }
     if (this.metronomeGain) {
-        this.metronomeGain.gain.setValueAtTime(this.metronomeVolume, this.ctx.currentTime);
+        this.metronomeGain.gain.setValueAtTime(this.metronomeVolume, playStartTime);
     }
 
     this.isPlaying = true;
-    this.startTime = this.ctx.currentTime;
+    this.startTime = playStartTime;
     
     // Start playback nodes
-    this.trackNodes.forEach(node => {
-        if (node) node.port.postMessage({ type: 'play', startSample });
+    this.trackNodes.forEach((node, i) => {
+        if (node) {
+            const buffer = this.trackBuffers[i];
+            if (buffer) {
+                // Send stereo buffers using new protocol
+                node.port.postMessage({ 
+                    type: 'set_buffers', 
+                    data: { left: buffer.left, right: buffer.right } 
+                });
+            }
+            // Send start command with frame-accurate start time
+            node.port.postMessage({ 
+                type: 'start', 
+                data: { startFrame: startFrame, loop: false } 
+            });
+        }
     });
 
-    // Start UI loop since metronome processor doesn't send time back
     this._runTimeLoop();
   }
 
   _runTimeLoop() {
       if (!this.isPlaying) return;
       const now = this.ctx.currentTime;
-      const elapsed = now - this.startTime;
+      const elapsed = Math.max(0, now - this.startTime);
       if (this.onTimeUpdate) this.onTimeUpdate(elapsed);
       this.animationFrameId = requestAnimationFrame(() => this._runTimeLoop());
   }
@@ -222,52 +237,73 @@ class AudioEngine {
     // Stop playback nodes
     this.trackNodes.forEach(node => { if(node) node.port.postMessage({ type: 'stop' }) });
     
-    // Stop recorders
+    // Stop recorders and notify completion
     this.recorderNodes.forEach((node, idx) => {
         if (node) {
             node.port.postMessage({ type: 'stop' });
             node.disconnect();
             this.recorderNodes[idx] = null;
+            if (this.recordingTracks.has(idx)) {
+                if (this.onTrackRecorded) this.onTrackRecorded(idx);
+            }
         }
     });
+    this.recordingTracks.clear();
   }
 
   async record(trackIndex) {
     await this.initInput();
     if (!this.inputSource) return; 
     
-    if (this.isRecording) return;
+    if (this.recorderNodes[trackIndex]) return;
     
-    const recorder = new AudioWorkletNode(this.ctx, 'recording-processor');
+    this.isRecording = true;
+    this.recordingTracks.add(trackIndex);
+    
+    const recorder = new AudioWorkletNode(this.ctx, 'recorder-worklet-processor');
     this.inputSource.connect(recorder);
-
     this.recorderNodes[trackIndex] = recorder;
     
-    recorder.port.onmessage = (e) => {
-        if (e.data.type === 'audioData') {
-            const buffer = new Float32Array(e.data.buffer);
-            this.trackBuffers[trackIndex] = buffer;
-            console.log(`Track ${trackIndex + 1} recorded: ${buffer.length} samples`);
-            
-            if (this.trackNodes[trackIndex]) {
-                this.trackNodes[trackIndex].port.postMessage({
-                    type: 'load',
-                    buffer: buffer
-                });
-            }
-            
-            if (this.onTrackRecorded) this.onTrackRecorded(trackIndex);
-        }
-    };
-
-    this.isRecording = true;
-    
-    // If not playing, start playing logic (metronome etc)
+    // If not playing, start playing to establish time base
     if (!this.isPlaying) {
         this.play();
     }
     
-    recorder.port.postMessage({ type: 'record' });
+    recorder.port.onmessage = (e) => {
+        const { left, right, frameNumber } = e.data;
+        if (left && frameNumber !== undefined) {
+             const playbackStartFrame = this.startTime * this.ctx.sampleRate;
+             const relativeFrame = frameNumber - playbackStartFrame;
+             
+             // Handle both channels (mono source might produce silent right channel depending on hardware, 
+             // but recorder processor duplicates if mono input)
+             this.writeToBuffer(trackIndex, Math.round(relativeFrame), left, right);
+        }
+    };
+  }
+
+  writeToBuffer(trackIndex, startSample, leftData, rightData) {
+      if (!this.trackBuffers[trackIndex]) {
+          // Fallback if not init
+           const bufferSize = this.ctx.sampleRate * 60 * 5;
+           this.trackBuffers[trackIndex] = {
+                left: new Float32Array(bufferSize),
+                right: new Float32Array(bufferSize)
+           };
+      }
+      
+      const buffers = this.trackBuffers[trackIndex];
+      const length = leftData.length;
+      
+      for (let i = 0; i < length; i++) {
+          const pos = startSample + i;
+          // Check bounds
+          if (pos >= 0 && pos < buffers.left.length) {
+              buffers.left[pos] = leftData[i];
+              // If rightData exists use it, otherwise duplicate left (though recorder sends both)
+              buffers.right[pos] = rightData ? rightData[i] : leftData[i];
+          }
+      }
   }
 
   setTrackVolume(index, db) {
@@ -288,7 +324,6 @@ class AudioEngine {
   setBpm(bpm) {
       this.bpm = bpm;
       if (this.metronomeNode) {
-          // New processor expects 'value' object
           this.metronomeNode.port.postMessage({ type: 'update', value: { bpm: bpm } });
       }
   }
