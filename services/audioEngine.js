@@ -188,6 +188,9 @@ class AudioEngine {
         });
     }
     if (this.metronomeGain) {
+        // Reset any previous decay envelopes
+        this.metronomeGain.gain.cancelScheduledValues(now);
+        this.metronomeGain.gain.setValueAtTime(0, now);
         this.metronomeGain.gain.setValueAtTime(this.metronomeVolume, playStartTime);
     }
 

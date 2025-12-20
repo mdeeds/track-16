@@ -271,7 +271,10 @@ export class AppRoot extends BaseComponent {
         }
     });
 
-    this.bind('#btn-play', 'click', () => { audioEngine.init(); audioEngine.play(null, null, []); });
+    this.bind('#btn-play', 'click', async () => { 
+        await audioEngine.init(); 
+        audioEngine.play(null, null, []); 
+    });
     this.bind('#btn-stop', 'click', () => audioEngine.stop());
     this.bind('#btn-rec', 'click', () => {
          const armed = tracks.find(t => t.armed);
